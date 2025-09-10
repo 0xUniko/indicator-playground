@@ -46,6 +46,11 @@ export default function IndicatorPlayground() {
     { label: "EMA200", period: 200, color: "#eab308", show: false },
   ]);
 
+  // MA drag smoothing parameters
+  // (removed) old MA drag smoothing state
+
+  // (removed) previous MA curve editing state and helpers
+
   const [showRSI, setShowRSI] = useState(true);
   const [rsiPeriod, setRsiPeriod] = useState(14);
 
@@ -273,9 +278,7 @@ export default function IndicatorPlayground() {
   const dragRef = useRef<{ index: number; field: DragField } | null>(null);
   const [isDraggingCandle, setIsDraggingCandle] = useState(false);
   // Interaction: drag SMA/EMA points
-  type MAKind = "SMA" | "EMA";
-  const maDragRef = useRef<{ kind: MAKind; period: number; index: number } | null>(null);
-  const [isDraggingMA, setIsDraggingMA] = useState(false);
+  
 
   // Helper: apply edits from higher timeframe to underlying base candles
   const applyEditToGroup = (prev: Candle[], tfIndex: number, field: DragField, newVal: number): Candle[] => {
@@ -495,94 +498,7 @@ export default function IndicatorPlayground() {
     };
   }, [isDraggingCandle, priceHeight, yMin, yMax, timeframe]);
 
-  // Drag moving averages to adjust candles
-  useEffect(() => {
-    const onMove = (e: PointerEvent) => {
-      if (!maDragRef.current) return;
-      const { kind, period, index } = maDragRef.current;
-      const svg = priceSvgRef.current;
-      if (!svg) return;
-      const rect = svg.getBoundingClientRect();
-      const y = e.clientY - rect.top;
-      const target = yToPrice(y);
-      const g = TF_TO_MINUTES[timeframe] || 1;
-      const nBase = baseCandles.length;
-      const baseEnd = Math.min(nBase - 1, index * g + (g - 1));
-      if (baseEnd < 0 || baseEnd >= nBase) return;
-      if (kind === "SMA") {
-        const j = index - (period - 1);
-        if (j < 0) return;
-        let windowSum = 0;
-        for (let t = j; t <= index; t++) windowSum += (candles[t]?.close ?? 0);
-        const newSum = period * target;
-        const delta = newSum - windowSum;
-        setBaseCandles((prev) => {
-          if (!editSessionRef.current) {
-            pushUndoSnapshot(prev);
-            editSessionRef.current = true;
-          }
-          const out = [...prev];
-          const c = { ...out[baseEnd] };
-          c.close = c.close + delta;
-          c.high = Math.max(c.high, c.open, c.close);
-          c.low = Math.min(c.low, c.open, c.close);
-          out[baseEnd] = c;
-          // continuity: next open equals current close
-          if (baseEnd + 1 < out.length) {
-            const n1 = { ...out[baseEnd + 1] };
-            n1.open = c.close;
-            n1.high = Math.max(n1.high, n1.open, n1.close);
-            n1.low = Math.min(n1.low, n1.open, n1.close);
-            out[baseEnd + 1] = n1;
-          }
-          return out;
-        });
-      } else {
-        const k = 2 / (period + 1);
-        const emaVals = ema(closeValues, period);
-        const prevE = emaVals[index - 1];
-        if (prevE == null) return;
-        const newClose = (target - (1 - k) * prevE) / k;
-        const delta = newClose - (candles[index]?.close ?? newClose);
-        setBaseCandles((prev) => {
-          if (!editSessionRef.current) {
-            pushUndoSnapshot(prev);
-            editSessionRef.current = true;
-          }
-          const out = [...prev];
-          const c = { ...out[baseEnd] };
-          c.close = c.close + delta;
-          c.high = Math.max(c.high, c.open, c.close);
-          c.low = Math.min(c.low, c.open, c.close);
-          out[baseEnd] = c;
-          // continuity: next open equals current close
-          if (baseEnd + 1 < out.length) {
-            const n1 = { ...out[baseEnd + 1] };
-            n1.open = c.close;
-            n1.high = Math.max(n1.high, n1.open, n1.close);
-            n1.low = Math.min(n1.low, n1.open, n1.close);
-            out[baseEnd + 1] = n1;
-          }
-          return out;
-        });
-      }
-    };
-    const onUp = () => {
-      maDragRef.current = null;
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
-      editSessionRef.current = false;
-      setIsDraggingMA(false);
-    };
-    if (isDraggingMA) {
-      window.addEventListener("pointermove", onMove);
-      window.addEventListener("pointerup", onUp);
-    }
-    return () => {
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
-    };
-  }, [isDraggingMA, timeframe, baseCandles.length, candles, closeValues]);
+  // Removed old MA drag-to-adjust functionality
 
   const priceSvgRef = useRef<SVGSVGElement | null>(null);
 
@@ -590,7 +506,8 @@ export default function IndicatorPlayground() {
   const panRef = useRef<{ lastX: number; lastY: number; startX: number; startY: number; active: boolean } | null>(null);
 
   const isHandleTarget = (el: EventTarget | null) => {
-    return !!(el as Element | null)?.getAttribute?.("data-role") && (el as Element).getAttribute("data-role") === "handle";
+    const attr = (el as Element | null)?.getAttribute?.("data-role");
+    return !!attr && attr === "handle";
   };
 
   const beginPan = (e: React.PointerEvent) => {
@@ -852,7 +769,7 @@ export default function IndicatorPlayground() {
             {(["1m","5m","15m","1h","4h","1d"] as Timeframe[]).map((tf) => (
               <button
                 key={tf}
-                className={`px-2 py-1 text-xs rounded border ${timeframe===tf?"bg-black/10 dark:bg-white/10 border-black/20 dark:border-white/20":"border-black/10 dark:border-white/10"}`}
+                className={`px-2 py-1 text-xs rounded border cursor-pointer ${timeframe===tf?"bg-black/10 dark:bg-white/10 border-black/20 dark:border-white/20":"border-black/10 dark:border-white/10"}`}
                 onClick={() => { setTimeframe(tf); setSelected(null); }}
                 title={`切换至 ${tf}`}
               >{tf}</button>
@@ -955,6 +872,7 @@ export default function IndicatorPlayground() {
             ))}
           </div>
         </div>
+        {/* 点击任一均线进入对应的曲线编辑模式；无需额外面板开关 */}
         <div className="flex flex-col gap-1">
           <label className="text-sm font-medium">RSI</label>
           <div className="flex items-center gap-2">
@@ -997,9 +915,9 @@ export default function IndicatorPlayground() {
         </div>
         <div className="flex-1" />
         <div className="flex gap-2 items-center">
-          <button className="h-9 px-3 rounded border border-black/10 dark:border-white/20" onClick={undo} disabled={undoStack.length===0}>Undo</button>
-          <button className="h-9 px-3 rounded border border-black/10 dark:border-white/20" onClick={redo} disabled={redoStack.length===0}>Redo</button>
-          <button className="h-9 px-3 rounded bg-foreground text-background" onClick={addBar} title="新增1根当前时间框架K线">Add Bar</button>
+          <button className="h-9 px-3 rounded border border-black/10 dark:border-white/20 cursor-pointer disabled:cursor-not-allowed" onClick={undo} disabled={undoStack.length===0}>Undo</button>
+          <button className="h-9 px-3 rounded border border-black/10 dark:border-white/20 cursor-pointer disabled:cursor-not-allowed" onClick={redo} disabled={redoStack.length===0}>Redo</button>
+          <button className="h-9 px-3 rounded bg-foreground text-background cursor-pointer" onClick={addBar} title="新增1根当前时间框架K线">Add Bar</button>
           <div className="flex items-center gap-1">
             <span className="text-xs opacity-70">x</span>
             <input
@@ -1010,16 +928,16 @@ export default function IndicatorPlayground() {
               onChange={(e) => setBatchCount(clamp(parseInt(e.target.value || "1"), 1, 100000))}
               title="批量生成数量（以当前时间框架计）"
             />
-            <button className="h-9 px-3 rounded bg-foreground/80 text-background" onClick={() => addBars(batchCount)} title="批量新增N根当前时间框架K线">Add xN</button>
+            <button className="h-9 px-3 rounded bg-foreground/80 text-background cursor-pointer" onClick={() => addBars(batchCount)} title="批量新增N根当前时间框架K线">Add xN</button>
           </div>
-          <button className="h-9 px-3 rounded border border-black/10 dark:border-white/20" onClick={removeBar}>Remove Bar</button>
-          <button className="h-9 px-3 rounded border border-black/10 dark:border-white/20" onClick={resetData}>Reset</button>
-          <button className="h-9 px-3 rounded border border-black/10 dark:border-white/20" onClick={zoomIn}>Zoom In</button>
-          <button className="h-9 px-3 rounded border border-black/10 dark:border-white/20" onClick={zoomOut}>Zoom Out</button>
-          <button className="h-9 px-3 rounded border border-black/10 dark:border-white/20" onClick={() => applyYZoomAt((priceSvgRef.current?.getBoundingClientRect().top ?? 0) + priceHeight / 2, -100)}>Y+</button>
-          <button className="h-9 px-3 rounded border border-black/10 dark:border-white/20" onClick={() => applyYZoomAt((priceSvgRef.current?.getBoundingClientRect().top ?? 0) + priceHeight / 2, 100)}>Y-</button>
-          <button className="h-9 px-3 rounded border border-black/10 dark:border-white/20" onClick={() => { setYZoomFactor(1); setYCenter(null); }}>Fit Y</button>
-          <button className="h-9 px-3 rounded border border-black/10 dark:border-white/20" onClick={toggleFullscreen}>全屏</button>
+          <button className="h-9 px-3 rounded border border-black/10 dark:border-white/20 cursor-pointer" onClick={removeBar}>Remove Bar</button>
+          <button className="h-9 px-3 rounded border border-black/10 dark:border-white/20 cursor-pointer" onClick={resetData}>Reset</button>
+          <button className="h-9 px-3 rounded border border-black/10 dark:border-white/20 cursor-pointer" onClick={zoomIn}>Zoom In</button>
+          <button className="h-9 px-3 rounded border border-black/10 dark:border-white/20 cursor-pointer" onClick={zoomOut}>Zoom Out</button>
+          <button className="h-9 px-3 rounded border border-black/10 dark:border-white/20 cursor-pointer" onClick={() => applyYZoomAt((priceSvgRef.current?.getBoundingClientRect().top ?? 0) + priceHeight / 2, -100)}>Y+</button>
+          <button className="h-9 px-3 rounded border border-black/10 dark:border-white/20 cursor-pointer" onClick={() => applyYZoomAt((priceSvgRef.current?.getBoundingClientRect().top ?? 0) + priceHeight / 2, 100)}>Y-</button>
+          <button className="h-9 px-3 rounded border border-black/10 dark:border-white/20 cursor-pointer" onClick={() => { setYZoomFactor(1); setYCenter(null); }}>Fit Y</button>
+          <button className="h-9 px-3 rounded border border-black/10 dark:border-white/20 cursor-pointer" onClick={toggleFullscreen}>全屏</button>
         </div>
       </div>
 
@@ -1052,14 +970,7 @@ export default function IndicatorPlayground() {
           })}
 
           {/* Background click targets to clear selection */}
-          <rect
-            x={paddingLeft}
-            y={0}
-            width={innerWidth}
-            height={priceHeight}
-            fill="transparent"
-            onClick={() => setSelected(null)}
-          />
+          <rect x={paddingLeft} y={0} width={innerWidth} height={priceHeight} fill="transparent" onClick={() => setSelected(null)} />
 
           {/* Candles */}
           {candles.map((c, i) => {
@@ -1102,6 +1013,8 @@ export default function IndicatorPlayground() {
             );
           })}
 
+          
+
           {/* Overlays: SMA */}
           {smaSeries.map((series) => series.show && (
             <path
@@ -1126,7 +1039,6 @@ export default function IndicatorPlayground() {
           {/* Overlays: EMA */}
           {emaSeries.map((series) => series.show && (
             <path
-              key={series.label}
               d={series.values
                 .map((v, i) => {
                   if (v == null) return null;
@@ -1144,64 +1056,6 @@ export default function IndicatorPlayground() {
               pointerEvents="none"
             />
           ))}
-
-          {/* MA drag handles: invisible hit areas */}
-          {smaSeries.map((series) => series.show && series.values.map((v, i) => {
-            if (v == null) return null;
-            if (i < Math.floor(viewStart) || i >= Math.ceil(viewStart + viewCount)) return null;
-            const x = paddingLeft + (i - viewStart) * step + step / 2;
-            const y = priceToY(v);
-            return (
-              <circle
-                key={`sma-h-${series.label}-${i}`}
-                data-role="handle"
-                cx={x}
-                cy={y}
-                r={Math.max(6, Math.min(10, barW))}
-                fill="transparent"
-                stroke="transparent"
-                onPointerDown={(e) => {
-                  e.preventDefault();
-                  (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
-                  maDragRef.current = { kind: "SMA", period: series.period, index: i };
-                  setIsDraggingMA(true);
-                  if (!editSessionRef.current) {
-                    pushUndoSnapshot(baseCandles);
-                    editSessionRef.current = true;
-                  }
-                }}
-                cursor="ns-resize"
-              />
-            );
-          }))}
-          {emaSeries.map((series) => series.show && series.values.map((v, i) => {
-            if (v == null) return null;
-            if (i < Math.floor(viewStart) || i >= Math.ceil(viewStart + viewCount)) return null;
-            const x = paddingLeft + (i - viewStart) * step + step / 2;
-            const y = priceToY(v);
-            return (
-              <circle
-                key={`ema-h-${series.label}-${i}`}
-                data-role="handle"
-                cx={x}
-                cy={y}
-                r={Math.max(6, Math.min(10, barW))}
-                fill="transparent"
-                stroke="transparent"
-                onPointerDown={(e) => {
-                  e.preventDefault();
-                  (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
-                  maDragRef.current = { kind: "EMA", period: series.period, index: i };
-                  setIsDraggingMA(true);
-                  if (!editSessionRef.current) {
-                    pushUndoSnapshot(baseCandles);
-                    editSessionRef.current = true;
-                  }
-                }}
-                cursor="ns-resize"
-              />
-            );
-          }))}
 
           {/* Oscillators */}
           {oscSegments.map((seg, segIdx) => {
