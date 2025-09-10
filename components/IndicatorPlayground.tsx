@@ -1,10 +1,10 @@
 "use client";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import type { Candle } from "@/lib/types";
-import { sma, ema, rsi, macd } from "@/lib/indicators";
-import { clamp, toFixed2 } from "@/lib/utils";
 import { genGBMBars, mulberry32 } from "@/lib/gbm";
+import { ema, macd, rsi, sma } from "@/lib/indicators";
+import type { Candle } from "@/lib/types";
+import { clamp, toFixed2 } from "@/lib/utils";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 
 // ---------------------------
 // Main component
@@ -29,8 +29,22 @@ export default function IndicatorPlayground() {
   const [selected, setSelected] = useState<number | null>(null);
 
   // Indicator settings
-  const [showEMA, setShowEMA] = useState(false);
-  const [emaPeriod, setEmaPeriod] = useState(20);
+  // Common SMA/EMA line configs
+  type LineConfig = { label: string; period: number; color: string; show: boolean };
+  const [smaConfigs, setSmaConfigs] = useState<LineConfig[]>([
+    { label: "SMA5", period: 5, color: "#ef4444", show: true },
+    { label: "SMA10", period: 10, color: "#f59e0b", show: true },
+    { label: "SMA20", period: 20, color: "#22c55e", show: true },
+    { label: "SMA50", period: 50, color: "#3b82f6", show: false },
+    { label: "SMA200", period: 200, color: "#a855f7", show: false },
+  ]);
+  const [emaConfigs, setEmaConfigs] = useState<LineConfig[]>([
+    { label: "EMA5", period: 5, color: "#a855f7", show: false },
+    { label: "EMA10", period: 10, color: "#60a5fa", show: false },
+    { label: "EMA20", period: 20, color: "#f43f5e", show: false },
+    { label: "EMA50", period: 50, color: "#14b8a6", show: false },
+    { label: "EMA200", period: 200, color: "#eab308", show: false },
+  ]);
 
   const [showRSI, setShowRSI] = useState(true);
   const [rsiPeriod, setRsiPeriod] = useState(14);
@@ -47,15 +61,32 @@ export default function IndicatorPlayground() {
   // Batch generate count (adjustable)
   const [batchCount, setBatchCount] = useState<number>(50);
 
-  // Multiple MA lines (common periods)
-  type MAConfig = { label: string; period: number; color: string; show: boolean };
-  const [maConfigs, setMaConfigs] = useState<MAConfig[]>([
-    { label: "MA5", period: 5, color: "#ef4444", show: true },
-    { label: "MA10", period: 10, color: "#f59e0b", show: true },
-    { label: "MA20", period: 20, color: "#22c55e", show: true },
-    { label: "MA50", period: 50, color: "#3b82f6", show: false },
-    { label: "MA200", period: 200, color: "#a855f7", show: false },
-  ]);
+  // Undo/Redo stacks for edits
+  const [undoStack, setUndoStack] = useState<Candle[][]>([]);
+  const [redoStack, setRedoStack] = useState<Candle[][]>([]);
+  const editSessionRef = useRef(false);
+  const pushUndoSnapshot = (snapshot: Candle[]) => {
+    setUndoStack((u) => [...u, snapshot.map((c) => ({ ...c }))]);
+    setRedoStack([]);
+  };
+  const undo = () => {
+    setUndoStack((u) => {
+      if (u.length === 0) return u;
+      const prev = u[u.length - 1];
+      setRedoStack((r) => [...r, baseCandles.map((c) => ({ ...c }))]);
+      setBaseCandles(prev.map((c) => ({ ...c })));
+      return u.slice(0, -1);
+    });
+  };
+  const redo = () => {
+    setRedoStack((r) => {
+      if (r.length === 0) return r;
+      const nextState = r[r.length - 1];
+      setUndoStack((u) => [...u, baseCandles.map((c) => ({ ...c }))]);
+      setBaseCandles(nextState.map((c) => ({ ...c })));
+      return r.slice(0, -1);
+    });
+  };
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [width, setWidth] = useState(900);
@@ -139,15 +170,22 @@ export default function IndicatorPlayground() {
   }, [candles.length]);
 
   const closeValues = useMemo(() => candles.map((c) => c.close), [candles]);
-  const maSeries = useMemo(
+  const smaSeries = useMemo(
     () =>
-      maConfigs.map((cfg) => ({
+      smaConfigs.map((cfg) => ({
         ...cfg,
         values: sma(closeValues, cfg.period),
       })),
-    [closeValues, maConfigs]
+    [closeValues, smaConfigs]
   );
-  const emaVals = useMemo(() => ema(closeValues, emaPeriod), [closeValues, emaPeriod]);
+  const emaSeries = useMemo(
+    () =>
+      emaConfigs.map((cfg) => ({
+        ...cfg,
+        values: ema(closeValues, cfg.period),
+      })),
+    [closeValues, emaConfigs]
+  );
   const rsiVals = useMemo(() => rsi(closeValues, rsiPeriod), [closeValues, rsiPeriod]);
   const macdVals = useMemo(() => macd(closeValues, macdFast, macdSlow, macdSignal), [closeValues, macdFast, macdSlow, macdSignal]);
 
@@ -188,7 +226,7 @@ export default function IndicatorPlayground() {
       min = Math.min(min, c.low);
       max = Math.max(max, c.high);
     }
-    for (const series of maSeries) if (series.show) {
+    for (const series of smaSeries) if (series.show) {
       for (let i = visStart; i <= visEnd; i++) {
         const v = series.values[i];
         if (v == null) continue;
@@ -196,9 +234,9 @@ export default function IndicatorPlayground() {
         max = Math.max(max, v);
       }
     }
-    if (showEMA) {
+    for (const series of emaSeries) if (series.show) {
       for (let i = visStart; i <= visEnd; i++) {
-        const v = emaVals[i];
+        const v = series.values[i];
         if (v == null) continue;
         min = Math.min(min, v);
         max = Math.max(max, v);
@@ -210,7 +248,7 @@ export default function IndicatorPlayground() {
     }
     const pad = (max - min) * 0.08 || 1;
     return { min: min - pad, max: max + pad };
-  }, [candles, maSeries, showEMA, emaVals, visStart, visEnd]);
+  }, [candles, smaSeries, emaSeries, visStart, visEnd]);
 
   // Vertical zoom state: factor and center price
   const [yZoomFactor, setYZoomFactor] = useState(1);
@@ -233,6 +271,11 @@ export default function IndicatorPlayground() {
   // Interaction: drag O/H/L/C handles
   type DragField = "open" | "high" | "low" | "close";
   const dragRef = useRef<{ index: number; field: DragField } | null>(null);
+  const [isDraggingCandle, setIsDraggingCandle] = useState(false);
+  // Interaction: drag SMA/EMA points
+  type MAKind = "SMA" | "EMA";
+  const maDragRef = useRef<{ kind: MAKind; period: number; index: number } | null>(null);
+  const [isDraggingMA, setIsDraggingMA] = useState(false);
 
   // Helper: apply edits from higher timeframe to underlying base candles
   const applyEditToGroup = (prev: Candle[], tfIndex: number, field: DragField, newVal: number): Candle[] => {
@@ -262,19 +305,35 @@ export default function IndicatorPlayground() {
     if (field === "open") {
       const delta = newVal - aggOpen;
       const c = { ...out[start] };
-      c.open = c.open + delta;
+      c.open = c.open + delta; // equals newVal
       c.high = Math.max(c.high, c.open, c.close);
       c.low = Math.min(c.low, c.open, c.close);
       out[start] = c;
+      // maintain continuity: previous close == current open
+      if (start - 1 >= 0) {
+        const p = { ...out[start - 1] };
+        p.close = c.open;
+        p.high = Math.max(p.high, p.open, p.close);
+        p.low = Math.min(p.low, p.open, p.close);
+        out[start - 1] = p;
+      }
       return out;
     }
     if (field === "close") {
       const delta = newVal - aggClose;
       const c = { ...out[end] };
-      c.close = c.close + delta;
+      c.close = c.close + delta; // equals newVal
       c.high = Math.max(c.high, c.open, c.close);
       c.low = Math.min(c.low, c.open, c.close);
       out[end] = c;
+      // maintain continuity: next open == current close
+      if (end + 1 < out.length) {
+        const n1 = { ...out[end + 1] };
+        n1.open = c.close;
+        n1.high = Math.max(n1.high, n1.open, n1.close);
+        n1.low = Math.min(n1.low, n1.open, n1.close);
+        out[end + 1] = n1;
+      }
       return out;
     }
     if (field === "high") {
@@ -373,13 +432,35 @@ export default function IndicatorPlayground() {
       const newPrice = yToPrice(y);
       if (timeframe === "1m") {
         setBaseCandles((prev) => {
-          // direct 1m edit maps 1:1
-          const g = TF_TO_MINUTES[timeframe];
-          const baseIdx = index * g; // g == 1
+          if (!editSessionRef.current) {
+            pushUndoSnapshot(prev);
+            editSessionRef.current = true;
+          }
           const next = [...prev];
+          const baseIdx = index;
           const c0 = { ...next[baseIdx] };
-          if (field === "open") c0.open = newPrice;
-          if (field === "close") c0.close = newPrice;
+          if (field === "open") {
+            c0.open = newPrice;
+            // continuity: previous close equals current open
+            if (baseIdx - 1 >= 0) {
+              const p = { ...next[baseIdx - 1] };
+              p.close = c0.open;
+              p.high = Math.max(p.high, p.open, p.close);
+              p.low = Math.min(p.low, p.open, p.close);
+              next[baseIdx - 1] = p;
+            }
+          }
+          if (field === "close") {
+            c0.close = newPrice;
+            // continuity: next open equals current close
+            if (baseIdx + 1 < next.length) {
+              const n1 = { ...next[baseIdx + 1] };
+              n1.open = c0.close;
+              n1.high = Math.max(n1.high, n1.open, n1.close);
+              n1.low = Math.min(n1.low, n1.open, n1.close);
+              next[baseIdx + 1] = n1;
+            }
+          }
           if (field === "high") c0.high = Math.max(newPrice, c0.open, c0.close);
           if (field === "low") c0.low = Math.min(newPrice, c0.open, c0.close);
           c0.low = Math.min(c0.low, c0.open, c0.close, c0.high);
@@ -388,15 +469,23 @@ export default function IndicatorPlayground() {
           return next;
         });
       } else {
-        setBaseCandles((prev) => applyEditToGroup(prev, index, field, newPrice));
+        setBaseCandles((prev) => {
+          if (!editSessionRef.current) {
+            pushUndoSnapshot(prev);
+            editSessionRef.current = true;
+          }
+          return applyEditToGroup(prev, index, field, newPrice);
+        });
       }
     };
     const onUp = () => {
       dragRef.current = null;
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
+      editSessionRef.current = false;
+      setIsDraggingCandle(false);
     };
-    if (dragRef.current) {
+    if (isDraggingCandle) {
       window.addEventListener("pointermove", onMove);
       window.addEventListener("pointerup", onUp);
     }
@@ -404,7 +493,96 @@ export default function IndicatorPlayground() {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
     };
-  }, [priceHeight, yMin, yMax]);
+  }, [isDraggingCandle, priceHeight, yMin, yMax, timeframe]);
+
+  // Drag moving averages to adjust candles
+  useEffect(() => {
+    const onMove = (e: PointerEvent) => {
+      if (!maDragRef.current) return;
+      const { kind, period, index } = maDragRef.current;
+      const svg = priceSvgRef.current;
+      if (!svg) return;
+      const rect = svg.getBoundingClientRect();
+      const y = e.clientY - rect.top;
+      const target = yToPrice(y);
+      const g = TF_TO_MINUTES[timeframe] || 1;
+      const nBase = baseCandles.length;
+      const baseEnd = Math.min(nBase - 1, index * g + (g - 1));
+      if (baseEnd < 0 || baseEnd >= nBase) return;
+      if (kind === "SMA") {
+        const j = index - (period - 1);
+        if (j < 0) return;
+        let windowSum = 0;
+        for (let t = j; t <= index; t++) windowSum += (candles[t]?.close ?? 0);
+        const newSum = period * target;
+        const delta = newSum - windowSum;
+        setBaseCandles((prev) => {
+          if (!editSessionRef.current) {
+            pushUndoSnapshot(prev);
+            editSessionRef.current = true;
+          }
+          const out = [...prev];
+          const c = { ...out[baseEnd] };
+          c.close = c.close + delta;
+          c.high = Math.max(c.high, c.open, c.close);
+          c.low = Math.min(c.low, c.open, c.close);
+          out[baseEnd] = c;
+          // continuity: next open equals current close
+          if (baseEnd + 1 < out.length) {
+            const n1 = { ...out[baseEnd + 1] };
+            n1.open = c.close;
+            n1.high = Math.max(n1.high, n1.open, n1.close);
+            n1.low = Math.min(n1.low, n1.open, n1.close);
+            out[baseEnd + 1] = n1;
+          }
+          return out;
+        });
+      } else {
+        const k = 2 / (period + 1);
+        const emaVals = ema(closeValues, period);
+        const prevE = emaVals[index - 1];
+        if (prevE == null) return;
+        const newClose = (target - (1 - k) * prevE) / k;
+        const delta = newClose - (candles[index]?.close ?? newClose);
+        setBaseCandles((prev) => {
+          if (!editSessionRef.current) {
+            pushUndoSnapshot(prev);
+            editSessionRef.current = true;
+          }
+          const out = [...prev];
+          const c = { ...out[baseEnd] };
+          c.close = c.close + delta;
+          c.high = Math.max(c.high, c.open, c.close);
+          c.low = Math.min(c.low, c.open, c.close);
+          out[baseEnd] = c;
+          // continuity: next open equals current close
+          if (baseEnd + 1 < out.length) {
+            const n1 = { ...out[baseEnd + 1] };
+            n1.open = c.close;
+            n1.high = Math.max(n1.high, n1.open, n1.close);
+            n1.low = Math.min(n1.low, n1.open, n1.close);
+            out[baseEnd + 1] = n1;
+          }
+          return out;
+        });
+      }
+    };
+    const onUp = () => {
+      maDragRef.current = null;
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      editSessionRef.current = false;
+      setIsDraggingMA(false);
+    };
+    if (isDraggingMA) {
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+    }
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+  }, [isDraggingMA, timeframe, baseCandles.length, candles, closeValues]);
 
   const priceSvgRef = useRef<SVGSVGElement | null>(null);
 
@@ -520,11 +698,61 @@ export default function IndicatorPlayground() {
     (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
     dragRef.current = { index, field };
     setSelected(index);
+    if (!editSessionRef.current) {
+      pushUndoSnapshot(baseCandles);
+      editSessionRef.current = true;
+    }
+    setIsDraggingCandle(true);
+    // Immediately apply a change on pointer down so a simple click sets value
+    const svg = priceSvgRef.current;
+    if (svg) {
+      const rect = svg.getBoundingClientRect();
+      const y = (e as any).clientY - rect.top;
+      const newPrice = yToPrice(y);
+      if (timeframe === "1m") {
+        setBaseCandles((prev) => {
+          const next = [...prev];
+          const baseIdx = index;
+          const c0 = { ...next[baseIdx] };
+          
+          if (field === "open") {
+            c0.open = newPrice;
+            if (baseIdx - 1 >= 0) {
+              const p = { ...next[baseIdx - 1] };
+              p.close = c0.open;
+              p.high = Math.max(p.high, p.open, p.close);
+              p.low = Math.min(p.low, p.open, p.close);
+              next[baseIdx - 1] = p;
+            }
+          }
+          if (field === "close") {
+            c0.close = newPrice;
+            if (baseIdx + 1 < next.length) {
+              const n1 = { ...next[baseIdx + 1] };
+              n1.open = c0.close;
+              n1.high = Math.max(n1.high, n1.open, n1.close);
+              n1.low = Math.min(n1.low, n1.open, n1.close);
+              next[baseIdx + 1] = n1;
+            }
+          }
+          if (field === "high") c0.high = Math.max(newPrice, c0.open, c0.close);
+          if (field === "low") c0.low = Math.min(newPrice, c0.open, c0.close);
+          c0.low = Math.min(c0.low, c0.open, c0.close, c0.high);
+          c0.high = Math.max(c0.low, c0.open, c0.close, c0.high);
+          
+          next[baseIdx] = c0;
+          return next;
+        });
+      } else {
+        setBaseCandles((prev) => applyEditToGroup(prev, index, field, newPrice));
+      }
+    }
   };
 
   // Helpers to add/remove/reset data
   const addBar = () => {
     setBaseCandles((prev) => {
+      pushUndoSnapshot(prev);
       const g = TF_TO_MINUTES[timeframe] || 1;
       const last = prev[prev.length - 1] ?? ({ close: 100 } as Candle);
       const gen = genGBMBars(g, last.close, gbmMu, gbmSigma, Math.random);
@@ -543,6 +771,7 @@ export default function IndicatorPlayground() {
   const addBars = (count: number) => {
     if (count <= 0) return;
     setBaseCandles((prev) => {
+      pushUndoSnapshot(prev);
       const g = TF_TO_MINUTES[timeframe] || 1;
       const last = prev[prev.length - 1] ?? ({ close: 100 } as Candle);
       const total = Math.max(0, count) * g;
@@ -561,6 +790,7 @@ export default function IndicatorPlayground() {
   const removeBar = () =>
     setBaseCandles((prev) => {
       if (prev.length <= 0) return prev;
+      pushUndoSnapshot(prev);
       const g = TF_TO_MINUTES[timeframe] || 1;
       const cut = Math.min(prev.length, g);
       const newArr = prev.slice(0, prev.length - cut);
@@ -578,6 +808,8 @@ export default function IndicatorPlayground() {
     // After reset, show the most recent window
     const newLen = g <= 1 ? data.length : Math.floor(data.length / g);
     setViewStart(Math.max(0, newLen - viewCount));
+    setUndoStack([]);
+    setRedoStack([]);
   };
 
   // Grid lines for price chart
@@ -650,15 +882,15 @@ export default function IndicatorPlayground() {
           </div>
         </div>
         <div className="flex flex-col gap-1">
-          <label className="text-sm font-medium">均线 (MA)</label>
+          <label className="text-sm font-medium">SMA</label>
           <div className="flex flex-wrap items-center gap-2">
-            {maConfigs.map((cfg, idx) => (
-              <div key={cfg.label} className="flex items-center gap-1">
+            {smaConfigs.map((cfg, idx) => (
+              <label key={cfg.label} className="flex items-center gap-1">
                 <input
                   type="checkbox"
                   checked={cfg.show}
                   onChange={(e) =>
-                    setMaConfigs((prev) => {
+                    setSmaConfigs((prev) => {
                       const next = [...prev];
                       next[idx] = { ...prev[idx], show: e.target.checked };
                       return next;
@@ -666,14 +898,14 @@ export default function IndicatorPlayground() {
                   }
                   title={`显示 ${cfg.label}`}
                 />
-                <span style={{ color: cfg.color }} className="text-xs w-10">{cfg.label}</span>
+                <span style={{ color: cfg.color }} className="text-xs w-12">{cfg.label}</span>
                 <input
                   type="number"
                   className="w-14 rounded border border-black/10 dark:border-white/20 bg-transparent px-2 py-1"
                   min={1}
                   value={cfg.period}
                   onChange={(e) =>
-                    setMaConfigs((prev) => {
+                    setSmaConfigs((prev) => {
                       const next = [...prev];
                       const val = clamp(parseInt(e.target.value || "1"), 1, 9999);
                       next[idx] = { ...prev[idx], period: val };
@@ -682,21 +914,45 @@ export default function IndicatorPlayground() {
                   }
                   title={`${cfg.label} 周期`}
                 />
-              </div>
+              </label>
             ))}
           </div>
         </div>
         <div className="flex flex-col gap-1">
           <label className="text-sm font-medium">EMA</label>
-          <div className="flex items-center gap-2">
-            <input id="ema" type="checkbox" checked={showEMA} onChange={(e) => setShowEMA(e.target.checked)} />
-            <input
-              type="number"
-              className="w-20 rounded border border-black/10 dark:border-white/20 bg-transparent px-2 py-1"
-              min={1}
-              value={emaPeriod}
-              onChange={(e) => setEmaPeriod(clamp(parseInt(e.target.value || "1"), 1, 999))}
-            />
+          <div className="flex flex-wrap items-center gap-2">
+            {emaConfigs.map((cfg, idx) => (
+              <label key={cfg.label} className="flex items-center gap-1">
+                <input
+                  type="checkbox"
+                  checked={cfg.show}
+                  onChange={(e) =>
+                    setEmaConfigs((prev) => {
+                      const next = [...prev];
+                      next[idx] = { ...prev[idx], show: e.target.checked };
+                      return next;
+                    })
+                  }
+                  title={`显示 ${cfg.label}`}
+                />
+                <span style={{ color: cfg.color }} className="text-xs w-12">{cfg.label}</span>
+                <input
+                  type="number"
+                  className="w-14 rounded border border-black/10 dark:border-white/20 bg-transparent px-2 py-1"
+                  min={1}
+                  value={cfg.period}
+                  onChange={(e) =>
+                    setEmaConfigs((prev) => {
+                      const next = [...prev];
+                      const val = clamp(parseInt(e.target.value || "1"), 1, 9999);
+                      next[idx] = { ...prev[idx], period: val };
+                      return next;
+                    })
+                  }
+                  title={`${cfg.label} 周期`}
+                />
+              </label>
+            ))}
           </div>
         </div>
         <div className="flex flex-col gap-1">
@@ -741,6 +997,8 @@ export default function IndicatorPlayground() {
         </div>
         <div className="flex-1" />
         <div className="flex gap-2 items-center">
+          <button className="h-9 px-3 rounded border border-black/10 dark:border-white/20" onClick={undo} disabled={undoStack.length===0}>Undo</button>
+          <button className="h-9 px-3 rounded border border-black/10 dark:border-white/20" onClick={redo} disabled={redoStack.length===0}>Redo</button>
           <button className="h-9 px-3 rounded bg-foreground text-background" onClick={addBar} title="新增1根当前时间框架K线">Add Bar</button>
           <div className="flex items-center gap-1">
             <span className="text-xs opacity-70">x</span>
@@ -780,18 +1038,28 @@ export default function IndicatorPlayground() {
         >
           {/* Price grid */}
           {gridYs.map((y, i) => (
-            <line key={`grid-${i}`} x1={paddingLeft} x2={paddingLeft + innerWidth} y1={y} y2={y} stroke="currentColor" opacity={0.1} />
+            <line key={`grid-${i}`} x1={paddingLeft} x2={paddingLeft + innerWidth} y1={y} y2={y} stroke="currentColor" opacity={0.1} pointerEvents="none" />
           ))}
 
           {/* Price axis labels */}
           {gridYs.map((y, i) => {
             const val = yToPrice(y);
             return (
-              <text key={`label-${i}`} x={6} y={y + 4} fontSize={11} opacity={0.7}>
+              <text key={`label-${i}`} x={6} y={y + 4} fontSize={11} opacity={0.7} pointerEvents="none">
                 {val.toFixed(2)}
               </text>
             );
           })}
+
+          {/* Background click targets to clear selection */}
+          <rect
+            x={paddingLeft}
+            y={0}
+            width={innerWidth}
+            height={priceHeight}
+            fill="transparent"
+            onClick={() => setSelected(null)}
+          />
 
           {/* Candles */}
           {candles.map((c, i) => {
@@ -834,8 +1102,8 @@ export default function IndicatorPlayground() {
             );
           })}
 
-          {/* Overlays: SMA/EMA */}
-          {maSeries.map((series) => series.show && (
+          {/* Overlays: SMA */}
+          {smaSeries.map((series) => series.show && (
             <path
               key={series.label}
               d={series.values
@@ -852,26 +1120,88 @@ export default function IndicatorPlayground() {
               fill="none"
               stroke={series.color}
               strokeWidth={1.3}
+              pointerEvents="none"
             />
           ))}
-          {showEMA && (
+          {/* Overlays: EMA */}
+          {emaSeries.map((series) => series.show && (
             <path
-              d={emaVals
+              key={series.label}
+              d={series.values
                 .map((v, i) => {
                   if (v == null) return null;
                   if (i < Math.floor(viewStart) || i >= Math.ceil(viewStart + viewCount)) return null;
                   const x = paddingLeft + (i - viewStart) * step + step / 2;
                   const y = priceToY(v);
-                  const isStart = i === Math.ceil(viewStart) || emaVals[i - 1] == null || i - 1 < viewStart;
-                  return `${isStart ? "M" : "L"}${x} ${y}`;
+                  const prevNull = i - 1 < 0 || series.values[i - 1] == null || i - 1 < viewStart;
+                  return `${prevNull ? "M" : "L"}${x} ${y}`;
                 })
                 .filter(Boolean)
                 .join(" ")}
               fill="none"
-              stroke="#a855f7"
-              strokeWidth={1.5}
+              stroke={series.color}
+              strokeWidth={1.3}
+              pointerEvents="none"
             />
-          )}
+          ))}
+
+          {/* MA drag handles: invisible hit areas */}
+          {smaSeries.map((series) => series.show && series.values.map((v, i) => {
+            if (v == null) return null;
+            if (i < Math.floor(viewStart) || i >= Math.ceil(viewStart + viewCount)) return null;
+            const x = paddingLeft + (i - viewStart) * step + step / 2;
+            const y = priceToY(v);
+            return (
+              <circle
+                key={`sma-h-${series.label}-${i}`}
+                data-role="handle"
+                cx={x}
+                cy={y}
+                r={Math.max(6, Math.min(10, barW))}
+                fill="transparent"
+                stroke="transparent"
+                onPointerDown={(e) => {
+                  e.preventDefault();
+                  (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
+                  maDragRef.current = { kind: "SMA", period: series.period, index: i };
+                  setIsDraggingMA(true);
+                  if (!editSessionRef.current) {
+                    pushUndoSnapshot(baseCandles);
+                    editSessionRef.current = true;
+                  }
+                }}
+                cursor="ns-resize"
+              />
+            );
+          }))}
+          {emaSeries.map((series) => series.show && series.values.map((v, i) => {
+            if (v == null) return null;
+            if (i < Math.floor(viewStart) || i >= Math.ceil(viewStart + viewCount)) return null;
+            const x = paddingLeft + (i - viewStart) * step + step / 2;
+            const y = priceToY(v);
+            return (
+              <circle
+                key={`ema-h-${series.label}-${i}`}
+                data-role="handle"
+                cx={x}
+                cy={y}
+                r={Math.max(6, Math.min(10, barW))}
+                fill="transparent"
+                stroke="transparent"
+                onPointerDown={(e) => {
+                  e.preventDefault();
+                  (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
+                  maDragRef.current = { kind: "EMA", period: series.period, index: i };
+                  setIsDraggingMA(true);
+                  if (!editSessionRef.current) {
+                    pushUndoSnapshot(baseCandles);
+                    editSessionRef.current = true;
+                  }
+                }}
+                cursor="ns-resize"
+              />
+            );
+          }))}
 
           {/* Oscillators */}
           {oscSegments.map((seg, segIdx) => {
@@ -1001,20 +1331,42 @@ export default function IndicatorPlayground() {
                   const v = Number(e.target.value);
                   if (timeframe === "1m") {
                     setBaseCandles((prev) => {
+                      pushUndoSnapshot(prev);
                       const next = [...prev];
                       const baseIdx = selected; // 1:1 for 1m
                       const c = { ...next[baseIdx] };
-                      if (field === "open") c.open = v;
+                      if (field === "open") {
+                        c.open = v;
+                        if (baseIdx - 1 >= 0) {
+                          const p = { ...next[baseIdx - 1] };
+                          p.close = c.open;
+                          p.high = Math.max(p.high, p.open, p.close);
+                          p.low = Math.min(p.low, p.open, p.close);
+                          next[baseIdx - 1] = p;
+                        }
+                      }
                       if (field === "high") c.high = Math.max(v, c.open, c.close);
                       if (field === "low") c.low = Math.min(v, c.open, c.close);
-                      if (field === "close") c.close = v;
+                      if (field === "close") {
+                        c.close = v;
+                        if (baseIdx + 1 < next.length) {
+                          const n1 = { ...next[baseIdx + 1] };
+                          n1.open = c.close;
+                          n1.high = Math.max(n1.high, n1.open, n1.close);
+                          n1.low = Math.min(n1.low, n1.open, n1.close);
+                          next[baseIdx + 1] = n1;
+                        }
+                      }
                       c.low = Math.min(c.low, c.open, c.close, c.high);
                       c.high = Math.max(c.low, c.open, c.close, c.high);
                       next[baseIdx] = c;
                       return next;
                     });
                   } else {
-                    setBaseCandles((prev) => applyEditToGroup(prev, selected, field, v));
+                    setBaseCandles((prev) => {
+                      pushUndoSnapshot(prev);
+                      return applyEditToGroup(prev, selected, field, v);
+                    });
                   }
                 }}
               />
