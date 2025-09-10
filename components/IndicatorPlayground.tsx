@@ -1,175 +1,35 @@
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
-
-type Candle = {
-  time: number; // simple index-based time
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-};
-
-type MACD = {
-  macd: Array<number | null>;
-  signal: Array<number | null>;
-  hist: Array<number | null>;
-};
-
-// ---------------------------
-// Indicator calculations
-// ---------------------------
-function sma(values: number[], period: number): Array<number | null> {
-  const res: Array<number | null> = Array(values.length).fill(null);
-  if (period <= 0) return res;
-  let sum = 0;
-  for (let i = 0; i < values.length; i++) {
-    sum += values[i];
-    if (i >= period) sum -= values[i - period];
-    if (i >= period - 1) res[i] = sum / period;
-  }
-  return res;
-}
-
-function ema(values: number[], period: number): Array<number | null> {
-  const res: Array<number | null> = Array(values.length).fill(null);
-  if (period <= 0) return res;
-  const k = 2 / (period + 1);
-  let prev: number | null = null;
-  for (let i = 0; i < values.length; i++) {
-    if (prev == null) {
-      if (i >= period - 1) {
-        // seed with SMA for first definable value
-        let sum = 0;
-        for (let j = i - (period - 1); j <= i; j++) sum += values[j];
-        prev = sum / period;
-        res[i] = prev;
-      }
-    } else {
-      prev = values[i] * k + prev * (1 - k);
-      res[i] = prev;
-    }
-  }
-  return res;
-}
-
-function rsi(values: number[], period: number): Array<number | null> {
-  const res: Array<number | null> = Array(values.length).fill(null);
-  if (period <= 0) return res;
-  let gain = 0;
-  let loss = 0;
-  for (let i = 1; i < values.length; i++) {
-    const change = values[i] - values[i - 1];
-    const up = Math.max(0, change);
-    const down = Math.max(0, -change);
-    if (i <= period) {
-      gain += up;
-      loss += down;
-      if (i === period) {
-        const avgGain = gain / period;
-        const avgLoss = loss / period;
-        const rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
-        res[i] = 100 - 100 / (1 + rs);
-      }
-    } else {
-      // Wilder's smoothing
-      const prev = res[i - 1];
-      // compute previous average gain/loss indirectly
-      // we track using a rolling update; we need to keep state, so recompute from previous averages
-      // Instead, maintain running avgs
-    }
-  }
-  // To avoid complexity above, compute with a pass that keeps running averages after seed
-  gain = 0;
-  loss = 0;
-  let avgGain = 0;
-  let avgLoss = 0;
-  for (let i = 1; i < values.length; i++) {
-    const change = values[i] - values[i - 1];
-    const up = Math.max(0, change);
-    const down = Math.max(0, -change);
-    if (i <= period) {
-      gain += up;
-      loss += down;
-      if (i === period) {
-        avgGain = gain / period;
-        avgLoss = loss / period;
-        const rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
-        res[i] = 100 - 100 / (1 + rs);
-      }
-    } else {
-      avgGain = (avgGain * (period - 1) + up) / period;
-      avgLoss = (avgLoss * (period - 1) + down) / period;
-      const rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
-      res[i] = 100 - 100 / (1 + rs);
-    }
-  }
-  return res;
-}
-
-function macd(values: number[], fast = 12, slow = 26, signalPeriod = 9): MACD {
-  const emaFast = ema(values, fast);
-  const emaSlow = ema(values, slow);
-  const macdArr: Array<number | null> = values.map((_, i) =>
-    emaFast[i] != null && emaSlow[i] != null ? (emaFast[i]! - emaSlow[i]!) : null
-  );
-  const macdVals: number[] = macdArr.map((v) => (v == null ? NaN : v));
-  const signalArr = ema(macdVals.map((v) => (Number.isNaN(v) ? 0 : v)), signalPeriod);
-  const signal: Array<number | null> = signalArr.map((v, i) => (macdArr[i] == null ? null : v));
-  const hist: Array<number | null> = macdArr.map((v, i) => (v == null || signal[i] == null ? null : v - signal[i]!));
-  return { macd: macdArr, signal, hist };
-}
-
-// ---------------------------
-// Utils
-// ---------------------------
-function clamp(n: number, min: number, max: number) {
-  return Math.min(max, Math.max(min, n));
-}
-
-function toFixed2(n: number) {
-  return Math.round(n * 100) / 100;
-}
-
-// Seedable PRNG (deterministic for SSR hydration safety)
-function mulberry32(seed: number) {
-  let a = seed >>> 0;
-  return function () {
-    a |= 0; a = (a + 0x6D2B79F5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-function genRandomWalkBars(n = 60, start = 100, rng: () => number = Math.random): Candle[] {
-  const res: Candle[] = [];
-  let last = start;
-  for (let i = 0; i < n; i++) {
-    const drift = (rng() - 0.5) * 1.6; // small drift
-    const open = last;
-    let close = open + drift + (rng() - 0.5) * 1.2;
-    close = toFixed2(close);
-    const high = toFixed2(Math.max(open, close) + rng() * 1.5 + 0.2);
-    const low = toFixed2(Math.min(open, close) - rng() * 1.5 - 0.2);
-    res.push({ time: i, open: toFixed2(open), high, low, close });
-    last = close;
-  }
-  return res;
-}
+import type { Candle } from "@/lib/types";
+import { sma, ema, rsi, macd } from "@/lib/indicators";
+import { clamp, toFixed2 } from "@/lib/utils";
+import { genGBMBars, mulberry32 } from "@/lib/gbm";
 
 // ---------------------------
 // Main component
 // ---------------------------
+const DEFAULT_MU = 0.001;
+const DEFAULT_SIGMA = 0.02;
+
+type Timeframe = "1m" | "5m" | "15m" | "1h" | "4h" | "1d";
+const TF_TO_MINUTES: Record<Timeframe, number> = {
+  "1m": 1,
+  "5m": 5,
+  "15m": 15,
+  "1h": 60,
+  "4h": 240,
+  "1d": 1440,
+};
+
 export default function IndicatorPlayground() {
   // Use a fixed-seed RNG for initial data to avoid SSR/client mismatch
-  const [candles, setCandles] = useState<Candle[]>(() => genRandomWalkBars(80, 100, mulberry32(1)));
+  const [baseCandles, setBaseCandles] = useState<Candle[]>(() => genGBMBars(80, 100, DEFAULT_MU, DEFAULT_SIGMA, mulberry32(1)));
+  const [timeframe, setTimeframe] = useState<Timeframe>("1m");
   const [selected, setSelected] = useState<number | null>(null);
 
   // Indicator settings
-  const [showSMA, setShowSMA] = useState(true);
   const [showEMA, setShowEMA] = useState(false);
-  const [smaPeriod, setSmaPeriod] = useState(20);
   const [emaPeriod, setEmaPeriod] = useState(20);
 
   const [showRSI, setShowRSI] = useState(true);
@@ -179,6 +39,23 @@ export default function IndicatorPlayground() {
   const [macdFast, setMacdFast] = useState(12);
   const [macdSlow, setMacdSlow] = useState(26);
   const [macdSignal, setMacdSignal] = useState(9);
+
+  // GBM parameters
+  const [gbmMu, setGbmMu] = useState<number>(DEFAULT_MU);
+  const [gbmSigma, setGbmSigma] = useState<number>(DEFAULT_SIGMA);
+
+  // Batch generate count (adjustable)
+  const [batchCount, setBatchCount] = useState<number>(50);
+
+  // Multiple MA lines (common periods)
+  type MAConfig = { label: string; period: number; color: string; show: boolean };
+  const [maConfigs, setMaConfigs] = useState<MAConfig[]>([
+    { label: "MA5", period: 5, color: "#ef4444", show: true },
+    { label: "MA10", period: 10, color: "#f59e0b", show: true },
+    { label: "MA20", period: 20, color: "#22c55e", show: true },
+    { label: "MA50", period: 50, color: "#3b82f6", show: false },
+    { label: "MA200", period: 200, color: "#a855f7", show: false },
+  ]);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [width, setWidth] = useState(900);
@@ -202,6 +79,58 @@ export default function IndicatorPlayground() {
     return () => ro.disconnect();
   }, []);
 
+  // Adjust viewport when timeframe changes to preserve visible time span and fit Y
+  const prevTimeframeRef = useRef<Timeframe>("1m");
+  useEffect(() => {
+    const gOld = TF_TO_MINUTES[prevTimeframeRef.current] || 1;
+    const gNew = TF_TO_MINUTES[timeframe] || 1;
+    if (gOld === gNew) return;
+    const oldLen = gOld <= 1 ? baseCandles.length : Math.floor(baseCandles.length / gOld);
+    const newLen = gNew <= 1 ? baseCandles.length : Math.floor(baseCandles.length / gNew);
+    if (newLen <= 0) {
+      prevTimeframeRef.current = timeframe;
+      return;
+    }
+    const baseStart = viewStart * gOld;
+    const baseSpan = Math.max(1, viewCount) * gOld;
+    let newCount = Math.max(5, Math.round(baseSpan / gNew));
+    newCount = Math.min(newCount, Math.max(1, newLen));
+    let newStart = baseStart / gNew;
+    newStart = clamp(newStart, 0, Math.max(0, newLen - newCount));
+    setViewCount(newCount);
+    setViewStart(newStart);
+    // Fit Y so user does not need manual adjust after TF change
+    setYZoomFactor(1);
+    setYCenter(null);
+    prevTimeframeRef.current = timeframe;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [timeframe, baseCandles.length]);
+
+  // Aggregate candles for current timeframe
+  const candles = useMemo(() => {
+    const g = TF_TO_MINUTES[timeframe];
+    if (!g || g <= 1) return baseCandles;
+    const out: Candle[] = [];
+    const n = baseCandles.length;
+    const lastGroup = Math.floor(n / g);
+    for (let gi = 0; gi < lastGroup; gi++) {
+      const start = gi * g;
+      const end = Math.min(n - 1, start + g - 1);
+      const first = baseCandles[start];
+      const last = baseCandles[end];
+      let hi = -Infinity;
+      let lo = Infinity;
+      for (let i = start; i <= end; i++) {
+        const c = baseCandles[i];
+        if (!c) continue;
+        if (c.high > hi) hi = c.high;
+        if (c.low < lo) lo = c.low;
+      }
+      out.push({ time: gi, open: first.open, high: hi, low: lo, close: last.close });
+    }
+    return out;
+  }, [baseCandles, timeframe]);
+
   // Keep viewport within bounds when data length changes
   useEffect(() => {
     setViewCount((v) => Math.min(v, Math.max(1, candles.length)));
@@ -210,7 +139,14 @@ export default function IndicatorPlayground() {
   }, [candles.length]);
 
   const closeValues = useMemo(() => candles.map((c) => c.close), [candles]);
-  const smaVals = useMemo(() => sma(closeValues, smaPeriod), [closeValues, smaPeriod]);
+  const maSeries = useMemo(
+    () =>
+      maConfigs.map((cfg) => ({
+        ...cfg,
+        values: sma(closeValues, cfg.period),
+      })),
+    [closeValues, maConfigs]
+  );
   const emaVals = useMemo(() => ema(closeValues, emaPeriod), [closeValues, emaPeriod]);
   const rsiVals = useMemo(() => rsi(closeValues, rsiPeriod), [closeValues, rsiPeriod]);
   const macdVals = useMemo(() => macd(closeValues, macdFast, macdSlow, macdSignal), [closeValues, macdFast, macdSlow, macdSignal]);
@@ -240,24 +176,50 @@ export default function IndicatorPlayground() {
   const step = innerWidth / Math.max(1, viewCount);
   const barW = clamp(Math.floor(step * 0.6), 3, 22);
 
-  // Y scale for price: include indicators shown
-  const priceMin = useMemo(() => {
+  // Y scale base on visible window
+  const visStart = Math.max(0, Math.floor(viewStart));
+  const visEnd = Math.min(candles.length - 1, Math.ceil(viewStart + viewCount) - 1);
+  const baseY = useMemo(() => {
     let min = Number.POSITIVE_INFINITY;
-    for (const c of candles) min = Math.min(min, c.low);
-    if (showSMA) for (const v of smaVals) if (v != null) min = Math.min(min, v);
-    if (showEMA) for (const v of emaVals) if (v != null) min = Math.min(min, v);
-    return min;
-  }, [candles, showSMA, showEMA, smaVals, emaVals]);
-  const priceMax = useMemo(() => {
     let max = Number.NEGATIVE_INFINITY;
-    for (const c of candles) max = Math.max(max, c.high);
-    if (showSMA) for (const v of smaVals) if (v != null) max = Math.max(max, v);
-    if (showEMA) for (const v of emaVals) if (v != null) max = Math.max(max, v);
-    return max;
-  }, [candles, showSMA, showEMA, smaVals, emaVals]);
-  const pad = (priceMax - priceMin) * 0.08 || 1;
-  const yMin = priceMin - pad;
-  const yMax = priceMax + pad;
+    for (let i = visStart; i <= visEnd; i++) {
+      const c = candles[i];
+      if (!c) continue;
+      min = Math.min(min, c.low);
+      max = Math.max(max, c.high);
+    }
+    for (const series of maSeries) if (series.show) {
+      for (let i = visStart; i <= visEnd; i++) {
+        const v = series.values[i];
+        if (v == null) continue;
+        min = Math.min(min, v);
+        max = Math.max(max, v);
+      }
+    }
+    if (showEMA) {
+      for (let i = visStart; i <= visEnd; i++) {
+        const v = emaVals[i];
+        if (v == null) continue;
+        min = Math.min(min, v);
+        max = Math.max(max, v);
+      }
+    }
+    if (!Number.isFinite(min) || !Number.isFinite(max) || min === max) {
+      min = (candles[visStart]?.close ?? 0) - 1;
+      max = (candles[visStart]?.close ?? 0) + 1;
+    }
+    const pad = (max - min) * 0.08 || 1;
+    return { min: min - pad, max: max + pad };
+  }, [candles, maSeries, showEMA, emaVals, visStart, visEnd]);
+
+  // Vertical zoom state: factor and center price
+  const [yZoomFactor, setYZoomFactor] = useState(1);
+  const [yCenter, setYCenter] = useState<number | null>(null);
+
+  const yRange = Math.max(1e-6, (baseY.max - baseY.min) * yZoomFactor);
+  const yC = yCenter ?? (baseY.min + baseY.max) / 2;
+  const yMin = yC - yRange / 2;
+  const yMax = yC + yRange / 2;
   const priceToY = (p: number) => {
     const t = (p - yMin) / (yMax - yMin);
     return Math.round((1 - t) * (priceHeight - 20) + 10);
@@ -272,6 +234,134 @@ export default function IndicatorPlayground() {
   type DragField = "open" | "high" | "low" | "close";
   const dragRef = useRef<{ index: number; field: DragField } | null>(null);
 
+  // Helper: apply edits from higher timeframe to underlying base candles
+  const applyEditToGroup = (prev: Candle[], tfIndex: number, field: DragField, newVal: number): Candle[] => {
+    const g = TF_TO_MINUTES[timeframe];
+    if (g <= 1) {
+      // 1m direct edit handled elsewhere
+      return prev;
+    }
+    const out = [...prev];
+    const n = prev.length;
+    const start = tfIndex * g;
+    const end = Math.min(n - 1, start + g - 1);
+    if (start < 0 || start >= n) return prev;
+    // Aggregate values of this group
+    const aggOpen = prev[start]?.open ?? 0;
+    const aggClose = prev[end]?.close ?? 0;
+    let aggHigh = -Infinity;
+    let aggLow = Infinity;
+    for (let i = start; i <= end; i++) {
+      const c = prev[i];
+      if (!c) continue;
+      if (c.high > aggHigh) aggHigh = c.high;
+      if (c.low < aggLow) aggLow = c.low;
+    }
+    const randIndex = (lo: number, hi: number) => lo + Math.floor(Math.random() * (hi - lo + 1));
+
+    if (field === "open") {
+      const delta = newVal - aggOpen;
+      const c = { ...out[start] };
+      c.open = c.open + delta;
+      c.high = Math.max(c.high, c.open, c.close);
+      c.low = Math.min(c.low, c.open, c.close);
+      out[start] = c;
+      return out;
+    }
+    if (field === "close") {
+      const delta = newVal - aggClose;
+      const c = { ...out[end] };
+      c.close = c.close + delta;
+      c.high = Math.max(c.high, c.open, c.close);
+      c.low = Math.min(c.low, c.open, c.close);
+      out[end] = c;
+      return out;
+    }
+    if (field === "high") {
+      let target = newVal;
+      // Respect per-candle constraints
+      const allowedMinHigh = [] as number[];
+      for (let i = start; i <= end; i++) {
+        const c = prev[i];
+        allowedMinHigh.push(Math.max(c.open, c.close));
+      }
+      const floorHigh = Math.max(...allowedMinHigh);
+      if (target < floorHigh) target = floorHigh;
+      if (target >= aggHigh) {
+        // raise: pick randomly among current max-high candles
+        const maxIdxs: number[] = [];
+        for (let i = start; i <= end; i++) if (prev[i].high === aggHigh) maxIdxs.push(i);
+        const k = maxIdxs.length ? maxIdxs[randIndex(0, maxIdxs.length - 1)] : randIndex(start, end);
+        const c = { ...out[k] };
+        c.high = Math.max(target, Math.max(c.open, c.close));
+        out[k] = c;
+      } else {
+        // lower: clamp all highs down to target respecting constraints
+        for (let i = start; i <= end; i++) {
+          const c = { ...out[i] };
+          const minHi = Math.max(c.open, c.close);
+          c.high = Math.max(minHi, Math.min(c.high, target));
+          out[i] = c;
+        }
+        // ensure at least one equals target if feasible
+        let candidates: number[] = [];
+        for (let i = start; i <= end; i++) {
+          const minHi = Math.max(out[i].open, out[i].close);
+          if (minHi <= target) candidates.push(i);
+        }
+        if (candidates.length) {
+          const k = candidates[randIndex(0, candidates.length - 1)];
+          const c = { ...out[k] };
+          c.high = Math.max(Math.max(c.open, c.close), target);
+          out[k] = c;
+        }
+      }
+      return out;
+    }
+    if (field === "low") {
+      let target = newVal;
+      // Respect per-candle constraints
+      const allowedMaxLow = [] as number[];
+      for (let i = start; i <= end; i++) {
+        const c = prev[i];
+        allowedMaxLow.push(Math.min(c.open, c.close));
+      }
+      const ceilLow = Math.min(...allowedMaxLow);
+      if (target > ceilLow) target = ceilLow;
+      if (target <= aggLow) {
+        // lower: pick randomly among current min-low candles
+        const minIdxs: number[] = [];
+        for (let i = start; i <= end; i++) if (prev[i].low === aggLow) minIdxs.push(i);
+        const k = minIdxs.length ? minIdxs[randIndex(0, minIdxs.length - 1)] : randIndex(start, end);
+        const c = { ...out[k] };
+        c.low = Math.min(target, Math.min(c.open, c.close));
+        out[k] = c;
+      } else {
+        // raise: clamp all lows up to target respecting constraints
+        for (let i = start; i <= end; i++) {
+          const c = { ...out[i] };
+          const maxLo = Math.min(c.open, c.close);
+          c.low = Math.min(maxLo, Math.max(c.low, target));
+          out[i] = c;
+        }
+        // ensure at least one equals target if feasible
+        let candidates: number[] = [];
+        for (let i = start; i <= end; i++) {
+          const maxLo = Math.min(out[i].open, out[i].close);
+          if (maxLo >= target) candidates.push(i);
+        }
+        if (candidates.length) {
+          const k = candidates[randIndex(0, candidates.length - 1)];
+          const c = { ...out[k] };
+          c.low = Math.min(Math.min(c.open, c.close), target);
+          out[k] = c;
+        }
+      }
+      return out;
+    }
+    return out;
+  };
+
   useEffect(() => {
     const onMove = (e: PointerEvent) => {
       if (!dragRef.current) return;
@@ -281,19 +371,25 @@ export default function IndicatorPlayground() {
       const rect = svg.getBoundingClientRect();
       const y = e.clientY - rect.top;
       const newPrice = yToPrice(y);
-      setCandles((prev) => {
-        const next = [...prev];
-        const c = { ...next[index] };
-        if (field === "open") c.open = newPrice;
-        if (field === "close") c.close = newPrice;
-        if (field === "high") c.high = Math.max(newPrice, c.open, c.close);
-        if (field === "low") c.low = Math.min(newPrice, c.open, c.close);
-        // enforce invariants
-        c.low = Math.min(c.low, c.open, c.close, c.high);
-        c.high = Math.max(c.low, c.open, c.close, c.high);
-        next[index] = c;
-        return next;
-      });
+      if (timeframe === "1m") {
+        setBaseCandles((prev) => {
+          // direct 1m edit maps 1:1
+          const g = TF_TO_MINUTES[timeframe];
+          const baseIdx = index * g; // g == 1
+          const next = [...prev];
+          const c0 = { ...next[baseIdx] };
+          if (field === "open") c0.open = newPrice;
+          if (field === "close") c0.close = newPrice;
+          if (field === "high") c0.high = Math.max(newPrice, c0.open, c0.close);
+          if (field === "low") c0.low = Math.min(newPrice, c0.open, c0.close);
+          c0.low = Math.min(c0.low, c0.open, c0.close, c0.high);
+          c0.high = Math.max(c0.low, c0.open, c0.close, c0.high);
+          next[baseIdx] = c0;
+          return next;
+        });
+      } else {
+        setBaseCandles((prev) => applyEditToGroup(prev, index, field, newPrice));
+      }
     };
     const onUp = () => {
       dragRef.current = null;
@@ -313,7 +409,7 @@ export default function IndicatorPlayground() {
   const priceSvgRef = useRef<SVGSVGElement | null>(null);
 
   // Pan and zoom handlers
-  const panRef = useRef<{ lastX: number; startX: number; active: boolean } | null>(null);
+  const panRef = useRef<{ lastX: number; lastY: number; startX: number; startY: number; active: boolean } | null>(null);
 
   const isHandleTarget = (el: EventTarget | null) => {
     return !!(el as Element | null)?.getAttribute?.("data-role") && (el as Element).getAttribute("data-role") === "handle";
@@ -323,22 +419,33 @@ export default function IndicatorPlayground() {
     // If starting on a drag handle, do not pan (let price handle drag instead)
     if (isHandleTarget(e.target)) return;
     // Record start; activate only after small threshold movement to preserve click-to-select
-    panRef.current = { lastX: e.clientX, startX: e.clientX, active: false };
+    panRef.current = { lastX: e.clientX, lastY: e.clientY, startX: e.clientX, startY: e.clientY, active: false };
   };
   const onPanMove = (e: React.PointerEvent) => {
     const pr = panRef.current;
     if (!pr) return;
-    const dxAbs = Math.abs(e.clientX - pr.startX);
-    if (!pr.active && dxAbs > 3) {
+    const dx0 = e.clientX - pr.startX;
+    const dy0 = e.clientY - pr.startY;
+    const dist = Math.hypot(dx0, dy0);
+    if (!pr.active && dist > 3) {
       // Start panning and capture pointer once user moves
       (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
       pr.active = true;
     }
     if (!pr.active) return;
     const dx = e.clientX - pr.lastX;
+    const dy = e.clientY - pr.lastY;
     pr.lastX = e.clientX;
+    pr.lastY = e.clientY;
     const deltaBars = dx / step;
     setViewStart((s) => clamp(s - deltaBars, 0, Math.max(0, candles.length - viewCount)));
+    // Vertical pan: adjust yCenter by price per pixel
+    const pricePerPixel = (yMax - yMin) / Math.max(1, (priceHeight - 20));
+    setYCenter((c) => {
+      const current = c ?? (baseY.min + baseY.max) / 2;
+      // Make content follow the drag: dragging up (dy < 0) moves view up (decrease center)
+      return current + dy * pricePerPixel;
+    });
   };
   const endPan = (e: React.PointerEvent) => {
     const pr = panRef.current;
@@ -361,6 +468,16 @@ export default function IndicatorPlayground() {
     newStart = clamp(newStart, 0, Math.max(0, candles.length - newCount));
     setViewCount(newCount);
     setViewStart(newStart);
+  };
+
+  const applyYZoomAt = (clientY: number, deltaY: number) => {
+    if (!priceSvgRef.current) return;
+    const rect = priceSvgRef.current.getBoundingClientRect();
+    const y = clientY - rect.top;
+    const anchorPrice = yToPrice(y);
+    const factor = deltaY > 0 ? 1.1 : 0.9;
+    setYZoomFactor((f) => clamp(f * factor, 0.05, 10));
+    setYCenter(anchorPrice);
   };
 
   const zoomIn = () => {
@@ -388,11 +505,15 @@ export default function IndicatorPlayground() {
     if (!el) return;
     const onWheel = (ev: WheelEvent) => {
       ev.preventDefault();
-      applyZoomAt(ev.clientX, ev.deltaY);
+      if (ev.altKey) {
+        applyYZoomAt(ev.clientY, ev.deltaY);
+      } else {
+        applyZoomAt(ev.clientX, ev.deltaY);
+      }
     };
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel as EventListener);
-  }, [applyZoomAt, innerWidth, paddingLeft, step, viewCount, viewStart, candles.length]);
+  }, [applyZoomAt, innerWidth, paddingLeft, step, viewCount, viewStart, candles.length, yMin, yMax]);
 
   const handlePointerDown = (index: number, field: DragField) => (e: React.PointerEvent) => {
     e.preventDefault();
@@ -403,43 +524,60 @@ export default function IndicatorPlayground() {
 
   // Helpers to add/remove/reset data
   const addBar = () => {
-    setCandles((prev) => {
+    setBaseCandles((prev) => {
+      const g = TF_TO_MINUTES[timeframe] || 1;
       const last = prev[prev.length - 1] ?? ({ close: 100 } as Candle);
-      const next = genRandomWalkBars(1, last.close, Math.random);
-      const nextOne = { ...next[0], time: prev.length };
-      const newArr = [...prev, nextOne];
+      const gen = genGBMBars(g, last.close, gbmMu, gbmSigma, Math.random);
+      const offset = prev.length;
+      const appended = gen.map((c, i) => ({ ...c, time: offset + i }));
+      const newArr = [...prev, ...appended];
       // Keep right edge pinned if we were at the end
-      const atEnd = viewStart + viewCount >= prev.length - 0.01;
-      if (atEnd) setViewStart(Math.max(0, newArr.length - viewCount));
+      const atEnd = viewStart + viewCount >= candles.length - 0.01;
+      if (atEnd) {
+        const newLen = g <= 1 ? newArr.length : Math.floor(newArr.length / g);
+        setViewStart(Math.max(0, newLen - viewCount));
+      }
       return newArr;
     });
   };
   const addBars = (count: number) => {
     if (count <= 0) return;
-    setCandles((prev) => {
+    setBaseCandles((prev) => {
+      const g = TF_TO_MINUTES[timeframe] || 1;
       const last = prev[prev.length - 1] ?? ({ close: 100 } as Candle);
-      const gen = genRandomWalkBars(count, last.close, Math.random);
+      const total = Math.max(0, count) * g;
+      const gen = genGBMBars(total, last.close, gbmMu, gbmSigma, Math.random);
       const offset = prev.length;
       const appended = gen.map((c, i) => ({ ...c, time: offset + i }));
       const newArr = [...prev, ...appended];
-      const atEnd = viewStart + viewCount >= prev.length - 0.01;
-      if (atEnd) setViewStart(Math.max(0, newArr.length - viewCount));
+      const atEnd = viewStart + viewCount >= candles.length - 0.01;
+      if (atEnd) {
+        const newLen = g <= 1 ? newArr.length : Math.floor(newArr.length / g);
+        setViewStart(Math.max(0, newLen - viewCount));
+      }
       return newArr;
     });
   };
   const removeBar = () =>
-    setCandles((prev) => {
-      if (prev.length <= 1) return prev;
-      const newArr = prev.slice(0, -1);
-      const atEnd = viewStart + viewCount >= prev.length - 0.01;
-      if (atEnd) setViewStart(Math.max(0, newArr.length - viewCount));
+    setBaseCandles((prev) => {
+      if (prev.length <= 0) return prev;
+      const g = TF_TO_MINUTES[timeframe] || 1;
+      const cut = Math.min(prev.length, g);
+      const newArr = prev.slice(0, prev.length - cut);
+      const atEnd = viewStart + viewCount >= candles.length - 0.01;
+      if (atEnd) {
+        const newLen = g <= 1 ? newArr.length : Math.floor(newArr.length / g);
+        setViewStart(Math.max(0, newLen - viewCount));
+      }
       return newArr;
     });
   const resetData = () => {
-    const data = genRandomWalkBars(80, 100, mulberry32(1));
-    setCandles(data);
+    const g = TF_TO_MINUTES[timeframe] || 1;
+    const data = genGBMBars(80 * g, 100, gbmMu, gbmSigma, mulberry32(1));
+    setBaseCandles(data);
     // After reset, show the most recent window
-    setViewStart(Math.max(0, data.length - viewCount));
+    const newLen = g <= 1 ? data.length : Math.floor(data.length / g);
+    setViewStart(Math.max(0, newLen - viewCount));
   };
 
   // Grid lines for price chart
@@ -477,16 +615,75 @@ export default function IndicatorPlayground() {
           <span className="hidden sm:inline text-xs opacity-70">拖拽编辑·滚轮缩放·拖动画布平移</span>
         </div>
         <div className="flex flex-col gap-1">
-          <label className="text-sm font-medium">SMA</label>
+          <label className="text-sm font-medium">时间框架</label>
+          <div className="flex items-center gap-1 flex-wrap">
+            {(["1m","5m","15m","1h","4h","1d"] as Timeframe[]).map((tf) => (
+              <button
+                key={tf}
+                className={`px-2 py-1 text-xs rounded border ${timeframe===tf?"bg-black/10 dark:bg-white/10 border-black/20 dark:border-white/20":"border-black/10 dark:border-white/10"}`}
+                onClick={() => { setTimeframe(tf); setSelected(null); }}
+                title={`切换至 ${tf}`}
+              >{tf}</button>
+            ))}
+          </div>
+        </div>
+        <div className="flex flex-col gap-1">
+          <label className="text-sm font-medium">GBM μ / σ</label>
           <div className="flex items-center gap-2">
-            <input id="sma" type="checkbox" checked={showSMA} onChange={(e) => setShowSMA(e.target.checked)} />
             <input
               type="number"
-              className="w-20 rounded border border-black/10 dark:border-white/20 bg-transparent px-2 py-1"
-              min={1}
-              value={smaPeriod}
-              onChange={(e) => setSmaPeriod(clamp(parseInt(e.target.value || "1"), 1, 999))}
+              step={0.001}
+              className="w-24 rounded border border-black/10 dark:border-white/20 bg-transparent px-2 py-1"
+              value={gbmMu}
+              onChange={(e) => setGbmMu(clamp(Number(e.target.value || 0), -1, 1))}
+              title="漂移 μ (每根bar的期望对数收益)"
             />
+            <input
+              type="number"
+              step={0.001}
+              min={0}
+              className="w-24 rounded border border-black/10 dark:border-white/20 bg-transparent px-2 py-1"
+              value={gbmSigma}
+              onChange={(e) => setGbmSigma(clamp(Number(e.target.value || 0), 0, 2))}
+              title="波动率 σ (每根bar的对数收益标准差)"
+            />
+          </div>
+        </div>
+        <div className="flex flex-col gap-1">
+          <label className="text-sm font-medium">均线 (MA)</label>
+          <div className="flex flex-wrap items-center gap-2">
+            {maConfigs.map((cfg, idx) => (
+              <div key={cfg.label} className="flex items-center gap-1">
+                <input
+                  type="checkbox"
+                  checked={cfg.show}
+                  onChange={(e) =>
+                    setMaConfigs((prev) => {
+                      const next = [...prev];
+                      next[idx] = { ...prev[idx], show: e.target.checked };
+                      return next;
+                    })
+                  }
+                  title={`显示 ${cfg.label}`}
+                />
+                <span style={{ color: cfg.color }} className="text-xs w-10">{cfg.label}</span>
+                <input
+                  type="number"
+                  className="w-14 rounded border border-black/10 dark:border-white/20 bg-transparent px-2 py-1"
+                  min={1}
+                  value={cfg.period}
+                  onChange={(e) =>
+                    setMaConfigs((prev) => {
+                      const next = [...prev];
+                      const val = clamp(parseInt(e.target.value || "1"), 1, 9999);
+                      next[idx] = { ...prev[idx], period: val };
+                      return next;
+                    })
+                  }
+                  title={`${cfg.label} 周期`}
+                />
+              </div>
+            ))}
           </div>
         </div>
         <div className="flex flex-col gap-1">
@@ -543,13 +740,27 @@ export default function IndicatorPlayground() {
           </div>
         </div>
         <div className="flex-1" />
-        <div className="flex gap-2">
-          <button className="h-9 px-3 rounded bg-foreground text-background" onClick={addBar}>Add Bar</button>
-          <button className="h-9 px-3 rounded bg-foreground/80 text-background" onClick={() => addBars(20)}>Add x20</button>
+        <div className="flex gap-2 items-center">
+          <button className="h-9 px-3 rounded bg-foreground text-background" onClick={addBar} title="新增1根当前时间框架K线">Add Bar</button>
+          <div className="flex items-center gap-1">
+            <span className="text-xs opacity-70">x</span>
+            <input
+              type="number"
+              min={1}
+              className="w-16 rounded border border-black/10 dark:border-white/20 bg-transparent px-2 py-1"
+              value={batchCount}
+              onChange={(e) => setBatchCount(clamp(parseInt(e.target.value || "1"), 1, 100000))}
+              title="批量生成数量（以当前时间框架计）"
+            />
+            <button className="h-9 px-3 rounded bg-foreground/80 text-background" onClick={() => addBars(batchCount)} title="批量新增N根当前时间框架K线">Add xN</button>
+          </div>
           <button className="h-9 px-3 rounded border border-black/10 dark:border-white/20" onClick={removeBar}>Remove Bar</button>
           <button className="h-9 px-3 rounded border border-black/10 dark:border-white/20" onClick={resetData}>Reset</button>
           <button className="h-9 px-3 rounded border border-black/10 dark:border-white/20" onClick={zoomIn}>Zoom In</button>
           <button className="h-9 px-3 rounded border border-black/10 dark:border-white/20" onClick={zoomOut}>Zoom Out</button>
+          <button className="h-9 px-3 rounded border border-black/10 dark:border-white/20" onClick={() => applyYZoomAt((priceSvgRef.current?.getBoundingClientRect().top ?? 0) + priceHeight / 2, -100)}>Y+</button>
+          <button className="h-9 px-3 rounded border border-black/10 dark:border-white/20" onClick={() => applyYZoomAt((priceSvgRef.current?.getBoundingClientRect().top ?? 0) + priceHeight / 2, 100)}>Y-</button>
+          <button className="h-9 px-3 rounded border border-black/10 dark:border-white/20" onClick={() => { setYZoomFactor(1); setYCenter(null); }}>Fit Y</button>
           <button className="h-9 px-3 rounded border border-black/10 dark:border-white/20" onClick={toggleFullscreen}>全屏</button>
         </div>
       </div>
@@ -624,24 +835,25 @@ export default function IndicatorPlayground() {
           })}
 
           {/* Overlays: SMA/EMA */}
-          {showSMA && (
+          {maSeries.map((series) => series.show && (
             <path
-              d={smaVals
+              key={series.label}
+              d={series.values
                 .map((v, i) => {
                   if (v == null) return null;
                   if (i < Math.floor(viewStart) || i >= Math.ceil(viewStart + viewCount)) return null;
                   const x = paddingLeft + (i - viewStart) * step + step / 2;
                   const y = priceToY(v);
-                  const isStart = i === Math.ceil(viewStart) || smaVals[i - 1] == null || i - 1 < viewStart;
-                  return `${isStart ? "M" : "L"}${x} ${y}`;
+                  const prevNull = i - 1 < 0 || series.values[i - 1] == null || i - 1 < viewStart;
+                  return `${prevNull ? "M" : "L"}${x} ${y}`;
                 })
                 .filter(Boolean)
                 .join(" ")}
               fill="none"
-              stroke="#eab308"
-              strokeWidth={1.5}
+              stroke={series.color}
+              strokeWidth={1.3}
             />
-          )}
+          ))}
           {showEMA && (
             <path
               d={emaVals
@@ -787,18 +999,23 @@ export default function IndicatorPlayground() {
                 value={(candles[selected] as any)[field]}
                 onChange={(e) => {
                   const v = Number(e.target.value);
-                  setCandles((prev) => {
-                    const next = [...prev];
-                    const c = { ...next[selected] };
-                    if (field === "open") c.open = v;
-                    if (field === "high") c.high = Math.max(v, c.open, c.close);
-                    if (field === "low") c.low = Math.min(v, c.open, c.close);
-                    if (field === "close") c.close = v;
-                    c.low = Math.min(c.low, c.open, c.close, c.high);
-                    c.high = Math.max(c.low, c.open, c.close, c.high);
-                    next[selected] = c;
-                    return next;
-                  });
+                  if (timeframe === "1m") {
+                    setBaseCandles((prev) => {
+                      const next = [...prev];
+                      const baseIdx = selected; // 1:1 for 1m
+                      const c = { ...next[baseIdx] };
+                      if (field === "open") c.open = v;
+                      if (field === "high") c.high = Math.max(v, c.open, c.close);
+                      if (field === "low") c.low = Math.min(v, c.open, c.close);
+                      if (field === "close") c.close = v;
+                      c.low = Math.min(c.low, c.open, c.close, c.high);
+                      c.high = Math.max(c.low, c.open, c.close, c.high);
+                      next[baseIdx] = c;
+                      return next;
+                    });
+                  } else {
+                    setBaseCandles((prev) => applyEditToGroup(prev, selected, field, v));
+                  }
                 }}
               />
             </label>
@@ -808,7 +1025,7 @@ export default function IndicatorPlayground() {
 
       <p className="mt-2 text-xs opacity-70">
         提示：点击任意K线后，会出现四个可拖拽的锚点：左侧“O”为开盘价、右侧“C”为收盘价，中间上下两个为最高/最低价。
-        拖拽或右侧输入框修改后，上方SMA/EMA与下方RSI/MACD会实时更新。滚轮缩放，按住 Shift 并拖动进行平移，点击“全屏”可全屏查看。
+        滚轮缩放（Alt+滚轮为纵向缩放，普通滚轮为横向缩放），直接拖动画布可平移（支持横向与纵向），点击“全屏”可全屏查看。
       </p>
     </div>
   );
